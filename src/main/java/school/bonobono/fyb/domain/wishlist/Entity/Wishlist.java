@@ -4,6 +4,7 @@ import lombok.*;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+import school.bonobono.fyb.domain.user.Entity.FybUser;
 
 import javax.persistence.*;
 import javax.validation.constraints.NotNull;
@@ -20,29 +21,29 @@ public class Wishlist {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Column(name = "pid")
-    private Long pid;
+    private Long id;
 
-    @Column(name = "uid")
-    @NotNull
-    private Long uid;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private FybUser user;
 
-    @Column(name = "pname",length = 50)
-    private String pname;
+    private String productName;
 
-    @Column(name = "pnotes")
-    private String notes;
+    private String productNotes;
 
-    @Column(name = "purl")
-    private String purl;
+    private String productUrl;
 
-    @Column(name = "price")
-    private Integer price;
+    private Integer productPrice;
 
     @CreatedDate
-    @Column(name = "createAt")
-    private LocalDateTime pcreateAt;
+    private LocalDateTime createAt;
     @LastModifiedDate
-    @Column(name = "updateAt")
-    private LocalDateTime pupdateAt;
+    private LocalDateTime updateAt;
+
+    public void updateWishlist(String productName, String productUrl, String productNotes, Integer productPrice) {
+        this.productName = productName;
+        this.productUrl = productUrl;
+        this.productNotes = productNotes;
+        this.productPrice = productPrice;
+    }
 }

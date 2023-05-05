@@ -13,21 +13,19 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
-import school.bonobono.fyb.domain.user.Dto.KakaoOAuthTokenDto;
-import school.bonobono.fyb.domain.user.Dto.KakaoUserInfoDto;
+import school.bonobono.fyb.domain.user.Dto.KakaoDto;
 
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class KakaoOAuth {
 
-    private final String KAKAO_TOKEN_REQUEST_URL = "https://kauth.kakao.com/oauth/token";
     @Value("${app.kakao.restApiKey}")
     private String restApiKey;
     @Value("${app.kakao.redirectUrl}")
     private String kakaoRedirecUrl;
 
-    public String responseUrl() {
+    public String getKakaoLoginURL() {
         String kakaoLoginUrl = "https://kauth.kakao.com/oauth/authorize?client_id=" + restApiKey +
                 "&redirect_uri=" + kakaoRedirecUrl + "&response_type=code";
         return kakaoLoginUrl;
@@ -46,32 +44,29 @@ public class KakaoOAuth {
 
         HttpEntity<MultiValueMap<String, String>> kakaoRequest = new HttpEntity<>(params, headersAccess);
 
-        ResponseEntity<String> responseEntity = restTemplate.postForEntity(KAKAO_TOKEN_REQUEST_URL,
+        return restTemplate.postForEntity("https://kauth.kakao.com/oauth/token",
                 kakaoRequest, String.class);
-        return responseEntity;
     }
 
-    public KakaoOAuthTokenDto getAccessToken(ResponseEntity<String> response) throws JsonProcessingException {
+    public KakaoDto.OAuthTokenDto getAccessToken(ResponseEntity<String> response) throws JsonProcessingException {
         ObjectMapper objectMapper = new ObjectMapper();
-        KakaoOAuthTokenDto kakaoOAuthTokenDto = objectMapper.readValue(response.getBody(), KakaoOAuthTokenDto.class);
+        KakaoDto.OAuthTokenDto kakaoOAuthTokenDto = null;
+        kakaoOAuthTokenDto = objectMapper.readValue(response.getBody(), KakaoDto.OAuthTokenDto.class);
         return kakaoOAuthTokenDto;
     }
 
-    public ResponseEntity<String> requestUserInfo(KakaoOAuthTokenDto oAuthToken) {
+    public ResponseEntity<String> requestUserInfo(KakaoDto.OAuthTokenDto oAuthToken) {
         HttpHeaders headers = new HttpHeaders();
         RestTemplate restTemplate = new RestTemplate();
         headers.add("Authorization", "Bearer " + oAuthToken.getAccess_token());
 
         HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(headers);
-        ResponseEntity<String> response = restTemplate.exchange("https://kapi.kakao.com/v2/user/me", HttpMethod.GET, request, String.class);
-        return response;
+        return restTemplate.exchange("https://kapi.kakao.com/v2/user/me", HttpMethod.GET, request, String.class);
     }
 
-    public KakaoUserInfoDto getUserInfo(ResponseEntity<String> response) throws JsonProcessingException {
+    public KakaoDto.UserInfoDto getUserInfo(ResponseEntity<String> response) throws JsonProcessingException {
         ObjectMapper objectMapper = new ObjectMapper();
-        KakaoUserInfoDto kakaoUserInfoDto = objectMapper.readValue(response.getBody(), KakaoUserInfoDto.class);
-        return kakaoUserInfoDto;
+        return objectMapper.readValue(response.getBody(), KakaoDto.UserInfoDto.class);
     }
-
 
 }

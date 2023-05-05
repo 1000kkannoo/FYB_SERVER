@@ -8,170 +8,220 @@ import lombok.extern.slf4j.Slf4j;
 import net.nurigo.java_sdk.api.Message;
 import net.nurigo.java_sdk.exceptions.CoolsmsException;
 import org.apache.commons.lang.RandomStringUtils;
-import org.json.simple.JSONObject;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
-import school.bonobono.fyb.domain.user.Dto.*;
+import school.bonobono.fyb.domain.user.Dto.UserDto;
 import school.bonobono.fyb.domain.user.Entity.Authority;
 import school.bonobono.fyb.domain.user.Entity.FybUser;
 import school.bonobono.fyb.domain.user.Repository.UserRepository;
-import school.bonobono.fyb.global.Config.Jwt.SecurityUtil;
 import school.bonobono.fyb.global.Config.Jwt.TokenProvider;
 import school.bonobono.fyb.global.Config.Redis.RedisDao;
 import school.bonobono.fyb.global.Exception.CustomException;
-import school.bonobono.fyb.global.Model.StatusTrue;
+import school.bonobono.fyb.global.Model.Result;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.util.*;
-
-import static school.bonobono.fyb.global.Exception.CustomErrorCode.*;
-import static school.bonobono.fyb.global.Model.Model.*;
-import static school.bonobono.fyb.global.Model.StatusTrue.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Objects;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class UserService {
-
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
-
     private final RedisDao redisDao;
     private final TokenProvider tokenProvider;
     private final AuthenticationManagerBuilder authenticationManagerBuilder;
     private final AmazonS3Client amazonS3Client;
-    Authority authority = Authority.builder()
-            .authorityName("ROLE_USER")
-            .build();
+
     @Value("${cloud.aws.s3.bucket}")
     private String bucket;
+    @Value("${coolsms.apiKey}")
+    private String smsKey;
+
+    @Value("${coolsms.secretKey}")
+    private String smsSecretKey;
+
+    // Service
+    @Transactional
+    public UserDto.LoginDto loginUser(UserDto.LoginDto request) {
+        LOGIN_VALIDATION(request);
+        String atk = tokenProvider.createToken(getAuthentication(request.getEmail(), request.getPassword()));
+        String rtk = tokenProvider.createRefreshToken(request.getEmail());
+        redisDao.setValues(request.getEmail(), rtk, Duration.ofDays(14));
+        FybUser user = getUser(request.getEmail());
+
+        return UserDto.LoginDto.response(user, atk, rtk);
+    }
+
+    @Transactional
+    public UserDto.LoginDto registerUser(UserDto.RegisterDto request) {
+        REGISTER_VALIDATION(request);
+
+        double BMI = calculateBMI(request);
+        FybUser user = userRepository.save(
+                FybUser.builder()
+                        .email(request.getEmail())
+                        .pw(passwordEncoder.encode(request.getPassword()))
+                        .name(request.getName())
+                        .authorities(getUserAuthority())
+                        .gender(request.getGender())
+                        .height(request.getHeight())
+                        .weight(request.getWeight())
+                        .age(request.getAge())
+                        .userData(request.getGender() + getBmiGrade(BMI) + getBodyInformation(request))
+                        .build()
+        );
+
+        String atk = tokenProvider.createToken(getAuthentication(request.getEmail(), request.getPassword()));
+        String rtk = tokenProvider.createRefreshToken(request.getEmail());
+        redisDao.setValues(request.getEmail(), rtk, Duration.ofDays(14));
+
+        return UserDto.LoginDto.response(user, atk, rtk);
+    }
+
+
+    // 내 정보 조회
+
+    @Transactional
+    public UserDto.DetailDto updateImage(MultipartFile multipartFile, UserDetails userDetails) {
+        FybUser user = getUser(userDetails.getUsername());
+        String myProfileImagePath = uploadProfileImage(multipartFile, user.getEmail());
+        user.uploadProfileImage(myProfileImagePath);
+        return UserDto.DetailDto.response(user);
+    }
+    // 내 정보 수정
+
+    @Transactional
+    public UserDto.DetailDto getMyInfo(UserDetails userDetails) {
+        return UserDto.DetailDto.response(getUser(userDetails.getUsername()));
+    }
+    // 로그아웃
+
+    @Transactional
+    public UserDto.DetailDto updateUser(UserDto.UpdateDto request, UserDetails userDetails) {
+        UPDATE_VALIDATION(request);
+        FybUser user = getUser(userDetails.getUsername());
+        user.updateUserInfo(
+                request.getName(), request.getGender(), request.getHeight(),
+                request.getWeight(), request.getAge()
+        );
+        return UserDto.DetailDto.response(user);
+    }
+    // 휴대폰 인증
+
+    @Transactional
+    public UserDto.DetailDto logoutUser(String auth, UserDetails userDetails) {
+        String atk = auth.substring(7);
+        String email = userDetails.getUsername();
+
+        if (redisDao.getValues(email) != null) {
+            redisDao.deleteValues(email);
+        }
+
+        redisDao.setValues(atk, "logout", Duration.ofMillis(
+                tokenProvider.getExpiration(atk)
+        ));
+
+        return new UserDto.DetailDto();
+    }
+    // 비밀번호 변경
+
+    @Transactional
+    public UserDto.PhoneVerificationDto certifiedPhoneNumber(UserDto.PhoneVerificationDto request) throws CoolsmsException {
+        // 핸드폰 번호 - 포함 13글자 지정
+        PHONE_NUM_LENGTH_CHECK(request);
+        String randNum = RandomStringUtils.randomNumeric(6);
+        Message coolSMS = new Message(smsKey, smsSecretKey);
+        coolSMS.send(getInformation(request, randNum));
+        return UserDto.PhoneVerificationDto.response(randNum);
+    }
+
+    @Transactional
+    public UserDto.PasswordResetDto PwChangeUser(UserDto.PasswordResetDto request, UserDetails userDetails) {
+        PWCHANGE_VALIDATION(request);
+        FybUser user = getUser(userDetails.getUsername());
+        user.updatePassword(passwordEncoder.encode(request.getNewPassword()));
+        return new UserDto.PasswordResetDto();
+    }
+
+
+    // 비밀번호 잃어버린경우
+
+    @Transactional
+    public UserDto.LostPasswordResetDto PwLostChange(UserDto.LostPasswordResetDto request) {
+        FybUser user = getUser(request.getEmail());
+        PWLOSTCHANGE_VALIDATION(request, user.getPw());
+        user.updatePassword(passwordEncoder.encode(request.getNewPassword()));
+        return new UserDto.LostPasswordResetDto();
+    }
+    // 회원탈퇴
+
+    @Transactional
+    public UserDto.DetailDto delete(UserDto.WithdrawalDto request, UserDetails userDetails) {
+        FybUser user = getUser(userDetails.getUsername());
+
+        if (passwordEncoder.matches(request.getPassword(), user.getPw()) == false) {
+            throw new CustomException(Result.USER_DELETE_STATUS_FALSE);
+        }
+
+        userRepository.delete(user);
+        return UserDto.DetailDto.response(user);
+    }
+    @Transactional
+    public UserDto.UserDataDto model(UserDetails userDetails) {
+        FybUser user = getUser(userDetails.getUsername());
+        return UserDto.UserDataDto.response(user.getUserData());
+    }
+
 
     // validate 및 단순 메소드화
+    @Transactional
+    public UserDto.AccessTokenRefreshDto reissue(String refreshToken) {
+        String email = tokenProvider.getRefreshTokenInfo(refreshToken);
+        String refreshTokenInRedis = redisDao.getValues(email);
 
-    private TokenInfoResponseDto getTokenInfo() {
-        return TokenInfoResponseDto.Response(
-                Objects.requireNonNull(SecurityUtil.getCurrentUsername()
-                        .flatMap(
-                                userRepository::findOneWithAuthoritiesByEmail)
-                        .orElse(null))
-        );
+        if (Objects.isNull(refreshTokenInRedis) || !refreshTokenInRedis.equals(refreshToken))
+            throw new CustomException(Result.REFRESH_TOKEN_IS_BAD_REQUEST);
+
+        return UserDto.AccessTokenRefreshDto.response(tokenProvider.reCreateToken(email));
     }
 
-    private void PHONE_NUM_LENGTH_CHECK(PhoneCheckDto.Request request) {
-        if (!(request.getPnum().length() == 13)) {
-            throw new CustomException(PHONE_NUM_ERROR);
-        }
-    }
-
-    private void REGISTER_VALIDATION(UserRegisterDto.Request request) {
-        if (request.getEmail() == null || request.getPw() == null || request.getName() == null
-                || request.getWeight() == null || request.getHeight() == null)
-            throw new CustomException(REGISTER_INFO_NULL);
-
-        if (userRepository.existsByEmail(request.getEmail()))
-            throw new CustomException(DUPLICATE_USER);
+    private void LOGIN_VALIDATION(UserDto.LoginDto request) {
+        if (request.getPassword().equals("google"))
+            throw new CustomException(Result.NOT_SOCIAL_LOGIN);
 
         if (!request.getEmail().contains("@"))
-            throw new CustomException(NOT_EMAIL_FORM);
-
-        if (!(request.getPw().length() > 5))
-            throw new CustomException(PASSWORD_SIZE_ERROR);
-
-        if (!(request.getPw().contains("!") || request.getPw().contains("@") || request.getPw().contains("#")
-                || request.getPw().contains("$") || request.getPw().contains("%") || request.getPw().contains("^")
-                || request.getPw().contains("&") || request.getPw().contains("*") || request.getPw().contains("(")
-                || request.getPw().contains(")"))
-        ) {
-            throw new CustomException(NOT_CONTAINS_EXCLAMATIONMARK);
-        }
-    }
-
-    private void UPDATE_VALIDATION(UserUpdateDto.Request request) {
-        if (request.getName() == null || request.getWeight() == null || request.getHeight() == null)
-            throw new CustomException(UPDATE_INFO_NULL);
-    }
-
-    private void PWCHANGE_VALIDATION(PwChangeDto.Request request) {
-        userRepository.findByEmail(request.getEmail())
-                .orElseThrow(() -> new CustomException(NOT_FOUND_USER));
-
-        if (!passwordEncoder.matches(request.getPw(), getTokenInfo().getPw())) {
-            throw new CustomException(PASSWORD_CHANGE_STATUS_FALSE);
-        }
-    }
-
-    private void PWLOSTCHANGE_VALIDATION(PwChangeDto.lostRequest request, String pw) {
-        userRepository.findByEmail(request.getEmail())
-                .orElseThrow(
-                        () -> new CustomException(NOT_FOUND_USER)
-                );
-        if (passwordEncoder.matches(request.getNewPw(), pw)) {
-            throw new CustomException(PASSWORD_IS_NOT_CHANGE);
-        }
-    }
-
-    private void LOGIN_VALIDATION(UserLoginDto.Request request) {
-        if (request.getPw().equals("google"))
-            throw new CustomException(NOT_SOCIAL_LOGIN);
-
-        if (!request.getEmail().contains("@"))
-            throw new CustomException(NOT_EMAIL_FORM);
+            throw new CustomException(Result.NOT_EMAIL_FORM);
 
         userRepository.findByEmail(request.getEmail())
                 .orElseThrow(
-                        () -> new CustomException(LOGIN_FALSE)
+                        () -> new CustomException(Result.LOGIN_FALSE)
                 );
 
         if (!passwordEncoder.matches(
-                request.getPw(),
+                request.getPassword(),
                 userRepository.findByEmail(request.getEmail())
                         .get()
                         .getPw()
         )
         ) {
-            throw new CustomException(LOGIN_FALSE);
+            throw new CustomException(Result.LOGIN_FALSE);
         }
     }
-
-    // Service
-    // 로그인
-    public ResponseEntity<StatusTrue> loginUser(UserLoginDto.Request request) {
-        LOGIN_VALIDATION(request);
-
-        UsernamePasswordAuthenticationToken authenticationToken =
-                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPw());
-        Authentication authentication = authenticationManagerBuilder.getObject().authenticate(authenticationToken);
-        SecurityContextHolder.getContext().setAuthentication(authentication);
-        String atk = tokenProvider.createToken(authentication);
-        String rtk = tokenProvider.createRefreshToken(request.getEmail());
-
-        redisDao.setValues(request.getEmail(), rtk, Duration.ofDays(14));
-
-        HttpHeaders httpHeaders = new HttpHeaders();
-        httpHeaders.add(AUTHORIZATION_HEADER, "Bearer " + atk);
-        return new ResponseEntity<>(StatusTrue.LOGIN_STATUS_TRUE, httpHeaders, HttpStatus.OK);
-    }
-
-    // 회원가입
-    @Transactional
-    public ResponseEntity<StatusTrue> registerUser(UserRegisterDto.Request request) {
-        REGISTER_VALIDATION(request);
-
+    private static String getBmiGrade(double BMI) {
         String bmiGrade;
-        String userForm = request.getForm() + request.getPelvis() + request.getShoulder() + request.getLeg();
-
-        double BMI = ((double) request.getWeight() / (double) request.getHeight() / (double) request.getHeight()) * 10000;
         if (BMI <= 18.5) {
             bmiGrade = "A";
         } else if (BMI <= 22.9) {
@@ -183,236 +233,111 @@ public class UserService {
         } else {
             bmiGrade = "E";
         }
-        userRepository.save(
-                FybUser.builder()
-                        .email(request.getEmail())
-                        .pw(passwordEncoder.encode(request.getPw()))
-                        .name(request.getName())
-                        .authorities(Collections.singleton(authority))
-                        .gender(request.getGender())
-                        .height(request.getHeight())
-                        .weight(request.getWeight())
-                        .age(request.getAge())
-                        .userData(request.getGender() + bmiGrade + userForm)
-                        .build()
-        );
+        return bmiGrade;
+    }
 
+    private static double calculateBMI(UserDto.RegisterDto request) {
+        double BMI = ((double) request.getWeight() / (double) request.getHeight() / (double) request.getHeight()) * 10000;
+        return BMI;
+    }
+
+    private Set<Authority> getUserAuthority() {
+        return Collections.singleton(Authority.builder()
+                .authorityName("ROLE_USER")
+                .build());
+    }
+
+    private void PHONE_NUM_LENGTH_CHECK(UserDto.PhoneVerificationDto request) {
+        if (!(request.getPhoneNumber().length() == 13)) {
+            throw new CustomException(Result.PHONE_NUM_ERROR);
+        }
+    }
+
+    private void REGISTER_VALIDATION(UserDto.RegisterDto request) {
+        if (request.getEmail() == null || request.getPassword() == null || request.getName() == null
+                || request.getWeight() == null || request.getHeight() == null)
+            throw new CustomException(Result.REGISTER_INFO_NULL);
+
+        if (userRepository.existsByEmail(request.getEmail()))
+            throw new CustomException(Result.DUPLICATE_USER);
+
+        if (!request.getEmail().contains("@"))
+            throw new CustomException(Result.NOT_EMAIL_FORM);
+
+        if (!(request.getPassword().length() > 5))
+            throw new CustomException(Result.PASSWORD_SIZE_ERROR);
+
+        if (!(request.getPassword().contains("!") || request.getPassword().contains("@") || request.getPassword().contains("#")
+                || request.getPassword().contains("$") || request.getPassword().contains("%") || request.getPassword().contains("^")
+                || request.getPassword().contains("&") || request.getPassword().contains("*") || request.getPassword().contains("(")
+                || request.getPassword().contains(")"))
+        ) {
+            throw new CustomException(Result.NOT_CONTAINS_EXCLAMATIONMARK);
+        }
+    }
+
+    private void UPDATE_VALIDATION(UserDto.UpdateDto request) {
+        if (request.getName() == null || request.getWeight() == null || request.getHeight() == null)
+            throw new CustomException(Result.UPDATE_INFO_NULL);
+    }
+
+    private void PWCHANGE_VALIDATION(UserDto.PasswordResetDto request) {
+        userRepository.findByEmail(request.getEmail())
+                .orElseThrow(() -> new CustomException(Result.NOT_FOUND_USER));
+
+        if (!passwordEncoder.matches(request.getPassword(), getUser(request.getEmail()).getPw())) {
+            throw new CustomException(Result.PASSWORD_CHANGE_STATUS_FALSE);
+        }
+    }
+
+    private void PWLOSTCHANGE_VALIDATION(UserDto.LostPasswordResetDto request, String pw) {
+        userRepository.findByEmail(request.getEmail())
+                .orElseThrow(
+                        () -> new CustomException(Result.NOT_FOUND_USER)
+                );
+        if (passwordEncoder.matches(request.getNewPassword(), pw)) {
+            throw new CustomException(Result.PASSWORD_IS_NOT_CHANGE);
+        }
+    }
+
+    public Authentication getAuthentication(String email, String password) {
         UsernamePasswordAuthenticationToken authenticationToken =
-                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPw());
+                new UsernamePasswordAuthenticationToken(email, password);
         Authentication authentication = authenticationManagerBuilder.getObject().authenticate(authenticationToken);
         SecurityContextHolder.getContext().setAuthentication(authentication);
-        String atk = tokenProvider.createToken(authentication);
-        String rtk = tokenProvider.createRefreshToken(request.getEmail());
-
-        redisDao.setValues(request.getEmail(), rtk, Duration.ofDays(14));
-
-        HttpHeaders httpHeaders = new HttpHeaders();
-        httpHeaders.add(AUTHORIZATION_HEADER, "Bearer " + atk);
-
-        return new ResponseEntity<>(REGISTER_STATUS_TRUE, httpHeaders, HttpStatus.CREATED);
+        return authentication;
     }
 
-    // 프로필 이미지 업로드
-    @Transactional
-    public ResponseEntity<StatusTrue> updateImage(MultipartFile multipartFile) throws IOException {
-
-        // String ext = multipartFile.getOriginalFilename().substring(multipartFile.getOriginalFilename().lastIndexOf("."));
-        String profile_image_name = "profile/" + getTokenInfo().getEmail();
+    private String uploadProfileImage(MultipartFile multipartFile, String email) {
+        String profile_image_name = "profile/" + email;
         ObjectMetadata objMeta = new ObjectMetadata();
-        objMeta.setContentLength(multipartFile.getInputStream().available());
-        amazonS3Client.putObject(bucket, profile_image_name, multipartFile.getInputStream(), objMeta);
-
-        userRepository.save(
-                FybUser.builder()
-                        .id(getTokenInfo().getId())
-                        .email(getTokenInfo().getEmail())
-                        .pw(getTokenInfo().getPw())
-                        .name(getTokenInfo().getName())
-                        .authorities(Collections.singleton(authority))
-                        .gender(getTokenInfo().getGender())
-                        .height(getTokenInfo().getHeight())
-                        .weight(getTokenInfo().getWeight())
-                        .age(getTokenInfo().getAge())
-                        .userData(getTokenInfo().getUserData())
-                        .profileImagePath(amazonS3Client.getUrl(bucket, profile_image_name).toString())
-                        .createAt(getTokenInfo().getCreateAt())
-                        .build()
-        );
-
-        return new ResponseEntity<>(PROFILE_IMAGE_UPLOAD_TRUE, HttpStatus.OK);
-    }
-
-    // 내 정보 조회
-    @Transactional
-    public ResponseEntity<List<UserReadDto.UserResponse>> getMyInfo() {
-
-        List<UserReadDto.UserResponse> list = userRepository.findById(getTokenInfo().getId())
-                .stream()
-                .map(UserReadDto.UserResponse::Response)
-                .toList();
-
-        // getCurrentUsername 은 해당 프젝에서는 email 임 !
-        return new ResponseEntity<>(list, HttpStatus.OK);
-    }
-
-    // 내 정보 수정
-    @Transactional
-    public ResponseEntity<StatusTrue> updateUser(UserUpdateDto.Request request) {
-
-        UPDATE_VALIDATION(request);
-
-        userRepository.save(
-                FybUser.builder()
-                        .id(getTokenInfo().getId())
-                        .email(getTokenInfo().getEmail())
-                        .pw(getTokenInfo().getPw())
-                        .name(request.getName())
-                        .authorities(Collections.singleton(authority))
-                        .gender(request.getGender())
-                        .height(request.getHeight())
-                        .weight(request.getWeight())
-                        .age(request.getAge())
-                        .userData(getTokenInfo().getUserData())
-                        .profileImagePath(getTokenInfo().getProfileImagePath())
-                        .createAt(getTokenInfo().getCreateAt())
-                        .build()
-        );
-
-        return new ResponseEntity<>(UPDATE_STATUS_TURE, HttpStatus.OK);
-    }
-
-    // 로그아웃
-    @Transactional
-    public ResponseEntity<StatusTrue> logoutUser(PwDeleteDto.Request2 request) {
-        String atk = request.getToken().substring(7);
-        String email = SecurityContextHolder.getContext()
-                .getAuthentication()
-                .getName();
-        if (redisDao.getValues(email) != null) {
-            redisDao.deleteValues(email);
+        try {
+            objMeta.setContentLength(multipartFile.getInputStream().available());
+            amazonS3Client.putObject(bucket, profile_image_name, multipartFile.getInputStream(), objMeta);
+        } catch (IOException e) {
+            log.info(e.getMessage());
+            throw new CustomException(Result.FAIL);
         }
-
-        redisDao.setValues(atk, "logout", Duration.ofMillis(
-                tokenProvider.getExpiration(atk)
-        ));
-
-        return new ResponseEntity<>(LOGOUT_STATUS_TRUE, HttpStatus.OK);
+        return amazonS3Client.getUrl(bucket, profile_image_name).toString();
     }
 
-    // 휴대폰 인증
-    @Transactional
-    public Map<Object, Object> certifiedPhoneNumber(PhoneCheckDto.Request request) throws CoolsmsException {
-        // 핸드폰 번호 - 포함 13글자 지정
-        PHONE_NUM_LENGTH_CHECK(request);
-
-        String randNum = RandomStringUtils.randomNumeric(6);
-
-        Message coolsms = new Message(CHECK_API_KEY, CHEKC_API_SECRET);
-
-        HashMap<String, String> params = new HashMap<String, String>();
-        params.put("to", request.getPnum());
-        params.put("from", "010-4345-4377");
-        params.put("type", "SMS");
-        params.put("text", "FYB 휴대폰인증 인증번호는" + "[ " + randNum + " ]" + "입니다.");
-        params.put("app_version", "test app 1.2");
-
-        JSONObject obj = (JSONObject) coolsms.send(params);
-
-        Map<Object, Object> send = new HashMap<>();
-        send.put("randNum", randNum);
-        return send;
-    }
-
-    // 비밀번호 변경
-    @Transactional
-    public ResponseEntity<StatusTrue> PwChangeUser(PwChangeDto.Request request) {
-        PWCHANGE_VALIDATION(request);
-
-        Authority authority = Authority.builder()
-                .authorityName("ROLE_USER")
-                .build();
-
-        userRepository.save(
-                FybUser.builder()
-                        .id(getTokenInfo().getId())
-                        .email(getTokenInfo().getEmail())
-                        .pw(passwordEncoder.encode(request.getNewPw()))
-                        .name(getTokenInfo().getName())
-                        .authorities(Collections.singleton(authority))
-                        .gender(getTokenInfo().getGender())
-                        .height(getTokenInfo().getHeight())
-                        .weight(getTokenInfo().getWeight())
-                        .age(getTokenInfo().getAge())
-                        .userData(getTokenInfo().getUserData())
-                        .createAt(getTokenInfo().getCreateAt())
-                        .profileImagePath(getTokenInfo().getProfileImagePath())
-                        .build()
+    private FybUser getUser(String email) {
+        return userRepository.findOneWithAuthoritiesByEmail(
+                email).orElseThrow(() -> new CustomException(Result.NOT_FOUND_USER)
         );
-        return new ResponseEntity<>(PASSWORD_CHANGE_STATUS_TRUE, HttpStatus.OK);
     }
 
-    // 비밀번호 잃어버린경우
-    @Transactional
-    public ResponseEntity<StatusTrue> PwLostChange(PwChangeDto.lostRequest request) {
-
-        Optional<String> email = Optional.of(request.getEmail());
-        TokenInfoResponseDto userInfo = TokenInfoResponseDto.Response(
-                Objects.requireNonNull(email
-                        .flatMap(
-                                userRepository::findOneWithAuthoritiesByEmail)
-                        .orElse(null))
-        );
-        PWLOSTCHANGE_VALIDATION(request, userInfo.getPw());
-
-
-        Authority authority = Authority.builder()
-                .authorityName("ROLE_USER")
-                .build();
-
-        userRepository.save(
-                FybUser.builder()
-                        .id(userInfo.getId())
-                        .email(userInfo.getEmail())
-                        .pw(passwordEncoder.encode(request.getNewPw()))
-                        .name(userInfo.getName())
-                        .authorities(Collections.singleton(authority))
-                        .gender(userInfo.getGender())
-                        .height(userInfo.getHeight())
-                        .weight(userInfo.getWeight())
-                        .age(userInfo.getAge())
-                        .userData(userInfo.getUserData())
-                        .createAt(userInfo.getCreateAt())
-                        .build()
-        );
-        return new ResponseEntity<>(PASSWORD_CHANGE_STATUS_TRUE, HttpStatus.OK);
+    private static String getBodyInformation(UserDto.RegisterDto request) {
+        return request.getForm() + request.getPelvis() + request.getShoulder() + request.getLeg();
     }
 
-    // 회원탈퇴
-    @Transactional
-    public ResponseEntity<StatusTrue> delete(PwDeleteDto.Request request) {
-
-        if (!passwordEncoder.matches(request.getPw(), getTokenInfo().getPw())) {
-            throw new CustomException(USER_DELETE_STATUS_FALSE);
-        }
-        userRepository.deleteById(getTokenInfo().getId());
-
-        return new ResponseEntity<>(USER_DELETE_STATUS_TRUE, HttpStatus.OK);
-    }
-
-    public ResponseEntity<Map<String, String>> model() {
-        Map<String, String> response = new HashMap<>();
-        response.put("userData", getTokenInfo().getUserData());
-        return new ResponseEntity<>(response, HttpStatus.OK);
-    }
-
-    public ResponseEntity<Map<String, String>> reissue(String rtk) {
-        Map<String, String> response = new HashMap<>();
-        String username = tokenProvider.getRefreshTokenInfo(rtk);
-        String rtkInRedis = redisDao.getValues(username);
-        if (Objects.isNull(rtkInRedis) || !rtkInRedis.equals(rtk))
-            throw new CustomException(REFRESH_TOKEN_IS_BAD_REQUEST);
-        response.put("atk", tokenProvider.reCreateToken(username));
-
-        return new ResponseEntity<>(response, HttpStatus.OK);
+    private static HashMap<String, String> getInformation(UserDto.PhoneVerificationDto request, String randNum) {
+        HashMap<String, String> sendInformation = new HashMap<>();
+        sendInformation.put("to", request.getPhoneNumber());
+        sendInformation.put("from", "010-4345-4377");
+        sendInformation.put("type", "SMS");
+        sendInformation.put("text", "FYB 휴대폰인증 인증번호는" + "[ " + randNum + " ]" + "입니다.");
+        sendInformation.put("app_version", "test app 1.2");
+        return sendInformation;
     }
 }

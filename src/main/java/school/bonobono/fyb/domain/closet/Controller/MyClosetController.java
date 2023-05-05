@@ -4,11 +4,14 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import school.bonobono.fyb.domain.closet.Dto.MyClosetDto;
-import school.bonobono.fyb.global.Model.StatusTrue;
+import school.bonobono.fyb.domain.closet.Dto.ClosetDto;
 import school.bonobono.fyb.domain.closet.Service.MyClosetService;
+import school.bonobono.fyb.global.Model.CustomResponseEntity;
+import school.bonobono.fyb.global.Model.StatusTrue;
 
 import java.io.IOException;
 import java.util.List;
@@ -23,44 +26,46 @@ public class MyClosetController {
     // 옷장 조회
     @GetMapping("closet")
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public List<MyClosetDto.readResponse> readMyCloset(
+    public CustomResponseEntity<List<ClosetDto.DetailDto>> readMyCloset(
+            @AuthenticationPrincipal UserDetails userDetails
     ) {
-        return myClosetService.readMyCloset();
+        return CustomResponseEntity.success(myClosetService.readMyCloset(userDetails));
     }
 
     // 옷 사진 추가 등록
     @PutMapping("closet")
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<Object> updateImage(
+    public CustomResponseEntity<ClosetDto.DetailDto> updateImage(
             @RequestParam("file") MultipartFile multipartFile, @RequestParam("id") Long id
-    ) throws IOException {
-        return myClosetService.updateImage(multipartFile, id);
+    ) {
+        return CustomResponseEntity.success(myClosetService.updateImage(multipartFile, id));
     }
 
     // 옷장 추가하기
     @PostMapping("closet")
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public List<Object> addMyCloset(
-            @RequestBody final MyClosetDto.addRequest request
+    public CustomResponseEntity<ClosetDto.DetailDto> addMyCloset(
+            @RequestBody final ClosetDto.SaveDto request,
+            @AuthenticationPrincipal final UserDetails userDetails
     ) {
-        return myClosetService.addMyCloset(request);
+        return CustomResponseEntity.success(myClosetService.addMyCloset(request, userDetails));
     }
 
     // 옷장 삭제
     @DeleteMapping("closet")
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<StatusTrue> deleteMyCloset(
-            @RequestBody final MyClosetDto.deleteRequest request
+    public CustomResponseEntity<ClosetDto.DetailDto> deleteMyCloset(
+            @RequestBody final ClosetDto.DeleteDto request
     ) {
-        return myClosetService.deleteCloset(request);
+        return CustomResponseEntity.success(myClosetService.deleteCloset(request));
     }
 
     // 옷장 업데이트
     @PatchMapping("closet")
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<StatusTrue> updateMyCloset(
-            @RequestBody final MyClosetDto.readResponse request
+    public CustomResponseEntity<ClosetDto.DetailDto> updateMyCloset(
+            @RequestBody final ClosetDto.UpdateDto request
     ) {
-        return myClosetService.updateCloset(request);
+        return CustomResponseEntity.success(myClosetService.updateCloset(request));
     }
 }

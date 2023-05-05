@@ -4,9 +4,12 @@ import lombok.*;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+import school.bonobono.fyb.domain.closet.Entity.Closet;
+import school.bonobono.fyb.domain.wishlist.Entity.Wishlist;
 
 import javax.persistence.*;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Set;
 
 @Getter
@@ -92,10 +95,40 @@ public class FybUser {
     @Column(name = "updateAt")
     private LocalDateTime updateAt;
 
+    @OneToMany(mappedBy = "user")
+    private List<Wishlist> Wishlists;
+
+    @OneToMany(mappedBy = "user")
+    private List<Closet> closets;
+
     @ManyToMany
     @JoinTable(
             name = "user_authority",
             joinColumns = {@JoinColumn(name = "id", referencedColumnName = "id")},
             inverseJoinColumns = {@JoinColumn(name = "authority_name", referencedColumnName = "authority_name")})
     private Set<Authority> authorities;
+
+    public void uploadProfileImage(String profileImagePath) {
+        this.profileImagePath = profileImagePath;
+    }
+
+    public void updateUserInfo(String name, Character gender, Integer height, Integer weight, Integer age) {
+        this.name = name;
+        this.gender = gender;
+        this.height = height;
+        this.weight = weight;
+        this.age = age;
+    }
+
+    public void updatePassword(String password) {
+        this.pw = password;
+    }
+
+    public void saveUserBodyInformation(Character gender, Integer height, Integer weight, Integer age, String userData) {
+        this.gender = gender;
+        this.height = height;
+        this.weight = weight;
+        this.age = age;
+        this.userData = userData;
+    }
 }

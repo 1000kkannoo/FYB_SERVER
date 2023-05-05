@@ -2,26 +2,21 @@ package school.bonobono.fyb.domain.shop.Service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.Sort;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import school.bonobono.fyb.domain.shop.Dto.ShopDataDto;
 import school.bonobono.fyb.domain.shop.Dto.ShopDto;
-import school.bonobono.fyb.domain.user.Dto.UserReadDto;
 import school.bonobono.fyb.domain.shop.Entity.Shop;
-import school.bonobono.fyb.domain.shop.Entity.ShopData;
-import school.bonobono.fyb.global.Exception.CustomErrorCode;
-import school.bonobono.fyb.global.Exception.CustomException;
-import school.bonobono.fyb.domain.shop.Repository.ShopDataRepository;
 import school.bonobono.fyb.domain.shop.Repository.ShopRepository;
+import school.bonobono.fyb.domain.user.Entity.FybUser;
 import school.bonobono.fyb.domain.user.Repository.UserRepository;
-import school.bonobono.fyb.global.Config.Jwt.SecurityUtil;
+import school.bonobono.fyb.global.Config.Redis.RedisDao;
+import school.bonobono.fyb.global.Exception.CustomException;
+import school.bonobono.fyb.global.Model.Result;
 
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -29,149 +24,132 @@ import java.util.stream.Collectors;
 @Slf4j
 public class ShopService {
 
-    public static final CustomErrorCode SEARCH_EMPTY = CustomErrorCode.SEARCH_EMPTY;
     private final UserRepository userRepository;
     private final ShopRepository shopRepository;
-    private final ShopDataRepository shopDataRepository;
-
+    private final RedisDao redisDao;
 
     // Service
-
     // Main 홈 조회 페이지
     @Transactional
-    public List<Object> getAllShopAndUserInfo() {
-
-        List<Object> list = shopRepository
-                .findAll()
-                .stream()
-                .map(ShopDto.Response::response)
-                .collect(
-                        Collectors.toList()
-                );
-
-        list.add(UserReadDto.UserResponse.Response(
-                        Objects.requireNonNull(
-                                SecurityUtil.getCurrentUsername()
-                                        .flatMap(
-                                                userRepository
-                                                        ::findOneWithAuthoritiesByEmail
-                                        )
-                                        .orElse(null))
-                )
-        );
-        return list;
-    }
-
-
-    // Search 페이지 전체 조회
-    @Transactional
-    public List<Shop> getAllShopInfo() {
-        return shopRepository.findAll();
+    public List<ShopDto.DetailListDto> getAllShopAndUserInfo() {
+        return shopRepository.findAll().stream()
+                .map(ShopDto.DetailListDto::response)
+                .collect(Collectors.toList());
     }
 
     // Search 페이지 검색 (문자열 포함 기반)
     @Transactional
-    public List<Shop> getSearchShop(ShopDto.Request request) {
-        List<Shop> shopList = shopRepository.findByShopContaining(request.getShop());
+    public List<ShopDto.DetailListDto> getSearchShop(ShopDto.SearchDto request) {
+        List<Shop> shopList = shopRepository.findByShopNameContaining(request.getShop());
         if (shopList.isEmpty()) {
-            throw new CustomException(SEARCH_EMPTY);
+            throw new CustomException(Result.SEARCH_EMPTY);
         }
-        return shopList;
+        return shopList.stream()
+                .map(ShopDto.DetailListDto::response)
+                .collect(Collectors.toList());
     }
 
-    // 쇼핑몰 사용자 데이터 저장
     @Transactional
-    public ResponseEntity<HashMap<Object, Object>> saveShopData(ShopDataDto.Request request) {
+    public ShopDto.SaveDto saveShopData(ShopDto.SaveDto request, UserDetails userDetails) {
 
-        ShopData shopData = shopDataRepository.findById(request.getSid())
-                .orElseThrow(
-                        NullPointerException::new
-                );
+        FybUser user = getUser(userDetails.getUsername());
+        Shop shop = getShop(request.getShopId());
+        Long shopId = shop.getId();
 
-        log.info(shopData.getSurl());
-
-        Integer clickAgeA = 0;
-        Integer clickAgeB = 0;
-        Integer clickMen = 0;
-        Integer clickWomen = 0;
-
-        if (request.getGender() == 'M') {
-            clickMen++;
-        } else if (request.getGender() == 'W') {
-            clickWomen++;
+        // 매장의 초기 데이터가 저장되지 않은 상태인 경우
+        if (shop.getShopData() == false) {
+            redisDao.setValues(shopId + "_viewCount", "0");
+            redisDao.setValues(shopId + "_maleUserCount", "0");
+            redisDao.setValues(shopId + "_femaleUserCount", "0");
+            redisDao.setValues(shopId + "_twenties", "0");
+            redisDao.setValues(shopId + "_thirties", "0");
+            shop.updateShopData();
         }
 
-        if (request.getAge() <= 29) {
-            clickAgeA++;
-        } else if (request.getAge() >= 30) {
-            clickAgeB++;
+        // 매장 조회수 데이터 수집
+        saveShopDataToRedis(shopId, "_viewCount");
+
+        // 성별 조회수 데이터 수집
+        if (user.getGender().equals('M')) {
+            saveShopDataToRedis(shopId, "_maleUserCount");
+        } else if (user.getGender().equals('W')) {
+            saveShopDataToRedis(shopId, "_femaleUserCount");
         }
 
-        shopDataRepository.save(
-                ShopData.builder()
-                        .sid(request.getSid())
-                        .surl(shopData.getSurl())
-                        .shop(shopData.getShop())
-                        .clickAgeA(shopData.getClickAgeA() + clickAgeA)
-                        .clickAgeB(shopData.getClickAgeB() + clickAgeB)
-                        .clickMen(shopData.getClickMen() + clickMen)
-                        .clickWomen(shopData.getClickWomen() + clickWomen)
-                        .clickAll(shopData.getClickAll() + 1)
-                        .simg(shopData.getSimg())
-                        .build()
+        // 나이 조회수 데이터 수집
+        if (user.getAge() <= 29) {
+            saveShopDataToRedis(shopId, "_twenties");
+        } else if (user.getAge() <= 39) {
+            saveShopDataToRedis(shopId, "_thirties");
+        }
+
+        return ShopDto.SaveDto.response(shop);
+    }
+
+    @Transactional
+    public List<ShopDto.DetailListDto> getMostViewed() {
+        List<Long> sortedViewsShopId = getSortedShopId("_viewCount");
+        System.out.println(sortedViewsShopId);
+        return shopRepository.findByIdsInSpecifiedOrder(sortedViewsShopId).stream()
+                .map(ShopDto.DetailListDto::response)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public List<ShopDto.DetailListDto> getAgeViewed(UserDetails userDetails) {
+        FybUser user = getUser(userDetails.getUsername());
+        List<Long> sortedAgesShopId = new ArrayList<>();
+
+        if (user.getAge() <= 29) {
+            sortedAgesShopId = getSortedShopId("_twenties");
+        } else if (user.getAge() <= 39) {
+            sortedAgesShopId = getSortedShopId("_thirties");
+        }
+
+        return shopRepository.findByIdIn(sortedAgesShopId).stream()
+                .map(ShopDto.DetailListDto::response)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public List<ShopDto.DetailListDto> getGenderViewed(UserDetails userDetails) {
+        FybUser user = getUser(userDetails.getUsername());
+        List<Long> sortedGendersShopId = new ArrayList<>();
+
+        if (user.getGender() == 'M') {
+            sortedGendersShopId = getSortedShopId("_maleUserCount");
+        } else {
+            sortedGendersShopId = getSortedShopId("_femaleUserCount");
+        }
+
+        return shopRepository.findByIdIn(sortedGendersShopId).stream()
+                .map(ShopDto.DetailListDto::response)
+                .collect(Collectors.toList());
+    }
+
+    private List<Long> getSortedShopId(String pattern) {
+        Set<String> keys = redisDao.getKeys("*" + pattern);
+        return keys.stream().sorted((a, b) -> {
+            String viewsA = redisDao.getValues(a);
+            String viewsB = redisDao.getValues(b);
+            return Integer.parseInt(viewsB) - Integer.parseInt(viewsA);
+        }).map(key -> Long.parseLong(key.substring(0, key.indexOf(pattern)))).toList();
+    }
+
+    private Shop getShop(Long id) {
+        return shopRepository.findById(id).orElseThrow(
+                () -> new CustomException(Result.NOT_FOUND_SHOP)
         );
-
-        HashMap<Object, Object> statusAndInfo = new HashMap<>();
-
-        statusAndInfo.put("redirect_url", shopData.getSurl());
-        statusAndInfo.put("shop", shopData.getShop());
-        statusAndInfo.put("status", "REDIRECT_TRUE");
-
-        return new ResponseEntity<>(statusAndInfo, HttpStatus.OK);
     }
 
-    public ResponseEntity<List<ShopDto.Response>> getMostViewed() {
-        List<ShopDto.Response> list = shopDataRepository.findAll(Sort.by(Sort.Direction.DESC, "clickAll")).stream()
-                .map(ShopDto.Response::dataResponse)
-                .collect(
-                        Collectors.toList()
-                );
-        return new ResponseEntity<>(list, HttpStatus.OK);
+    private void saveShopDataToRedis(Long id, String keyName) {
+        int incrementedCount = Integer.parseInt(redisDao.getValues(id + keyName));
+        redisDao.setValues(id + keyName, String.valueOf(++incrementedCount));
     }
 
-    public ResponseEntity<List<ShopDto.Response>> getAgeViewed(Integer value) {
-        if (value <= 29) {
-            List<ShopDto.Response> list = shopDataRepository.findAll(Sort.by(Sort.Direction.DESC, "clickAgeA")).stream()
-                    .map(ShopDto.Response::dataResponse)
-                    .collect(
-                            Collectors.toList()
-                    );
-            return new ResponseEntity<>(list, HttpStatus.OK);
-        } else {
-            List<ShopDto.Response> list = shopDataRepository.findAll(Sort.by(Sort.Direction.DESC, "clickAgeB")).stream()
-                    .map(ShopDto.Response::dataResponse)
-                    .collect(
-                            Collectors.toList()
-                    );
-            return new ResponseEntity<>(list, HttpStatus.OK);
-        }
-    }
-
-    public ResponseEntity<List<ShopDto.Response>> getGenderViewed(Character value) {
-        if (value == 'M') {
-            List<ShopDto.Response> list = shopDataRepository.findAll(Sort.by(Sort.Direction.DESC, "clickMen")).stream()
-                    .map(ShopDto.Response::dataResponse)
-                    .collect(
-                            Collectors.toList()
-                    );
-            return new ResponseEntity<>(list, HttpStatus.OK);
-        } else {
-            List<ShopDto.Response> list = shopDataRepository.findAll(Sort.by(Sort.Direction.DESC, "clickWomen")).stream()
-                    .map(ShopDto.Response::dataResponse)
-                    .collect(
-                            Collectors.toList()
-                    );
-            return new ResponseEntity<>(list, HttpStatus.OK);
-        }
+    private FybUser getUser(String email) {
+        return userRepository.findOneWithAuthoritiesByEmail(
+                email).orElseThrow(() -> new CustomException(Result.NOT_FOUND_USER)
+        );
     }
 }

@@ -1,22 +1,18 @@
 package school.bonobono.fyb.global.Exception;
 
 import lombok.Getter;
+import lombok.Setter;
+import school.bonobono.fyb.global.Model.Result;
 
 @Getter
-public class CustomException extends RuntimeException { // runtimeException 상속
+@Setter
+public class CustomException extends RuntimeException {
 
-    private CustomErrorCode customErrorCode;
-    private String detaliMessage;
+    private Result result;
+    private String debug;
 
-    public CustomException(CustomErrorCode customErrorCode) {
-        super(customErrorCode.getStatusMessage()); // runtimeException
-        this.customErrorCode = customErrorCode;
-        this.detaliMessage = customErrorCode.getStatusMessage();
-    }
-
-    public CustomException(CustomErrorCode customErrorCode, String detaliMessage) {
-        super(detaliMessage); // runtimeException
-        this.customErrorCode = customErrorCode;
-        this.detaliMessage = detaliMessage;
+    public CustomException(Result result) {
+        this.result = result;
+        this.debug = result.getMessage();
     }
 }

@@ -4,11 +4,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
-import school.bonobono.fyb.domain.shop.Dto.ShopDataDto;
 import school.bonobono.fyb.domain.shop.Dto.ShopDto;
-import school.bonobono.fyb.domain.shop.Entity.Shop;
 import school.bonobono.fyb.domain.shop.Service.ShopService;
+import school.bonobono.fyb.global.Model.CustomResponseEntity;
 
 import java.util.HashMap;
 import java.util.List;
@@ -24,57 +25,52 @@ public class ShopController {
     // Main 홈 페이지
     @GetMapping
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public List<Object> getAllShopAndUserInfo(
+    public CustomResponseEntity<List<ShopDto.DetailListDto>> getAllShopAndUserInfo(
     ) {
-        return shopService.getAllShopAndUserInfo();
+        return CustomResponseEntity.success(shopService.getAllShopAndUserInfo());
     }
 
     // 사용자 최다조회수 API
     @GetMapping("rank/all")
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<List<ShopDto.Response>> getMostViewed(
+    public CustomResponseEntity<List<ShopDto.DetailListDto>> getMostViewed(
     ) {
-        return shopService.getMostViewed();
+        return CustomResponseEntity.success(shopService.getMostViewed());
     }
 
     // 사용자 나이대별 최다조회수 API
     @GetMapping("rank/age")
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<List<ShopDto.Response>> getAgeViewed(
-            @RequestParam(required = false, value = "value") Integer value
+    public CustomResponseEntity<List<ShopDto.DetailListDto>> getAgeViewed(
+            @AuthenticationPrincipal final UserDetails userDetails
     ) {
-        return shopService.getAgeViewed(value);
+        return CustomResponseEntity.success(shopService.getAgeViewed(userDetails));
     }
 
     // 사용자 성별 최다조회수 API
     @GetMapping("rank/gender")
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<List<ShopDto.Response>> getGenderViewed(
-            @RequestParam(required = false, value = "value") Character value
+    public CustomResponseEntity<List<ShopDto.DetailListDto>> getGenderViewed(
+            @AuthenticationPrincipal final UserDetails userDetails
     ) {
-        return shopService.getGenderViewed(value);
+        return CustomResponseEntity.success(shopService.getGenderViewed(userDetails));
     }
 
     // 쇼핑몰 클릭시 쇼핑몰 이용자의 빅데이터 분석
     @PostMapping
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<HashMap<Object, Object>> saveShopData(
-            @RequestBody final ShopDataDto.Request request
-    ) {
-        return shopService.saveShopData(request);
-    }
-
-    // Search 페이지 Get
-    @GetMapping("shop")
-    public List<Shop> getAllShop() {
-        return shopService.getAllShopInfo();
+    public CustomResponseEntity<ShopDto.SaveDto> saveShopData(
+            @RequestBody ShopDto.SaveDto request,
+            @AuthenticationPrincipal final UserDetails userDetails
+            ) {
+        return CustomResponseEntity.success(shopService.saveShopData(request, userDetails));
     }
 
     // Search 페이지 Post
     @PostMapping("shop")
-    public List<Shop> getSearchShop(
-            @RequestBody final ShopDto.Request request
+    public CustomResponseEntity<List<ShopDto.DetailListDto>> getSearchShop(
+            @RequestBody final ShopDto.SearchDto request
     ) {
-        return shopService.getSearchShop(request);
+        return CustomResponseEntity.success(shopService.getSearchShop(request));
     }
 }

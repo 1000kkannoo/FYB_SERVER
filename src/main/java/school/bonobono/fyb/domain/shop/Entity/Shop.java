@@ -12,22 +12,27 @@ import javax.validation.constraints.NotNull;
 @NoArgsConstructor
 @Builder
 @Entity
+@Table(name = "shop")
+@EntityListeners(AuditingEntityListener.class)
 public class Shop {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Column(name = "s_id")
     @NotNull
-    private Long sid;
+    private Long id;
 
-    @Column(name = "shop", length = 15)
     @NotNull
-    private String shop;
+    private String shopName;
 
-    @Column(name = "shop_url")
     @NotNull
-    private String surl;
+    private String shopUrl;
 
-    @Column(name = "simg")
     @NotNull
-    private String simg;
+    private String shopImage;
+
+    @NotNull
+    private Boolean shopData = false;
+
+    public void updateShopData() {
+        this.shopData = true;
+    }
 }

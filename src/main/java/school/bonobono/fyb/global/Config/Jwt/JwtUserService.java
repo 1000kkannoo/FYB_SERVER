@@ -10,9 +10,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import school.bonobono.fyb.domain.user.Entity.FybUser;
-import school.bonobono.fyb.global.Exception.CustomErrorCode;
-import school.bonobono.fyb.global.Exception.CustomException;
 import school.bonobono.fyb.domain.user.Repository.UserRepository;
+import school.bonobono.fyb.global.Exception.CustomException;
+import school.bonobono.fyb.global.Model.Result;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -21,25 +21,21 @@ import java.util.stream.Collectors;
 @Component("userDetailsService")
 @RequiredArgsConstructor
 public class JwtUserService implements UserDetailsService {
-    public static final CustomErrorCode LOGIN_FALSE = CustomErrorCode.LOGIN_FALSE;
     private final UserRepository userRepository;
 
     @Override
     @Transactional
     public UserDetails loadUserByUsername(final String email) {
         return userRepository.findOneWithAuthoritiesByEmail(email)
-                .map(user -> createUser(user))
-                .orElseThrow(() -> new CustomException(LOGIN_FALSE));
+                .map(this::createUser)
+                .orElseThrow(() -> new CustomException(Result.LOGIN_FALSE));
     }
 
     private User createUser(FybUser user) {
-
         List<GrantedAuthority> grantedAuthorities = user.getAuthorities().stream()
                 .map(authority -> new SimpleGrantedAuthority(authority.getAuthorityName()))
                 .collect(Collectors.toList());
-        return new User(user.getEmail(),
-                user.getPw(),
-                grantedAuthorities
+        return new User(user.getEmail(), user.getPw(), grantedAuthorities
         );
     }
 }
